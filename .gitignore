@@ -1,0 +1,11 @@
+# ---- 敏感信息：不要提交到公开仓库 ----
+cookies.json
+profile/
+output/
+history/
+
+# ---- Python ----
+__pycache__/
+*.pyc
+.venv/
+venv/
