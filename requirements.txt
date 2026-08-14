@@ -1,7 +1,6 @@
-# 小红书截图工具依赖（Streamlit Cloud 兼容版）
-# 注意：不要锁太新的版本，Cloud 环境的 pip 源可能还没有
+# 小红书截图工具依赖（Streamlit Cloud 安全版）
+# 只保留核心依赖，版本范围宽松，确保 Cloud 能装上
 playwright>=1.40,<2.0
 openpyxl>=3.1.0,<4.0
+Pillow>=9.0,<11.0
 streamlit>=1.37,<2.0
-Pillow>=10.0,<11.0
-pandas>=2.0,<3.0
