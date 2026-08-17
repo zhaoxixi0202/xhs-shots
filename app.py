@@ -84,7 +84,7 @@ def get_history_items(limit: int = 50) -> list[dict]:
 st.set_page_config(page_title="小红书笔记截图工具", page_icon="📸", layout="wide")
 
 MODE_HELP = {
-    "to_keyword": "🎯 截到关键词位置（推荐）— 横向全屏宽度，纵向从顶部截到关键词出现的位置",
+    "to_keyword": "🎯 截到关键词位置（需填关键词）— 横向全屏宽度，纵向从顶部截到关键词出现的位置",
     "note": "✨ 仅笔记正文 — 自动截取笔记内容区，不含侧边栏和推荐",
     "full": "整页长截图（包含侧边栏、导航、底部推荐等全部内容）",
     "viewport": "只截当前屏幕可见区域",
@@ -139,6 +139,26 @@ def parse_region(s):
     if not s:
         return None
     return tuple(int(x) for x in s.split(","))
+
+
+def validate_mode_params(mode: str, p: dict) -> str | None:
+    """Return an error message if the chosen mode is missing required params, else None."""
+    if mode in ("keyword", "to_keyword"):
+        kw = (p.get("keyword") or "").strip()
+        if not kw:
+            alt = "note" if mode == "to_keyword" else "keyword"
+            return (f"「{mode}」模式需要先填写「关键词」才能截图。\n\n"
+                    f"请在上方输入关键词（例如「价格」「夸克扫描王」「总结」）。\n"
+                    f"👉 如果不知道关键词，可把「截取方式」改成「note」（截整篇笔记正文，无需关键词）。")
+    if mode == "element":
+        sel = (p.get("selector") or "").strip()
+        if not sel:
+            return "「element」模式需要先填写「CSS 选择器」才能截图。"
+    if mode == "region":
+        reg = (p.get("region") or "").strip()
+        if not reg:
+            return "「region」模式需要先填写「区域 x,y,w,h」才能截图。"
+    return None
 
 
 def main():
@@ -212,8 +232,12 @@ def main():
                             format_func=lambda m: f"{m} — {MODE_HELP[m]}")
         p = mode_params(mode, tab_id="single")
         if st.button("📸 截图", use_container_width=True) and url.strip():
-            with st.spinner("正在打开浏览器截图…"):
-                out_path = OUTPUT_DIR / "single.png"
+            kw_err = validate_mode_params(mode, p)
+            if kw_err:
+                st.error(kw_err)
+            else:
+                with st.spinner("正在打开浏览器截图…"):
+                    out_path = OUTPUT_DIR / "single.png"
                 try:
                     saved = load_cookies()
                     with CaptureEngine(PROFILE, headless=True, mobile=mobile, cookies=saved, humanize=humanize) as e:
@@ -288,7 +312,11 @@ def main():
             p = mode_params(mode, tab_id="batch")
 
             if st.button("🚀 开始批量截图", use_container_width=True):
-                progress = st.progress(0, text="准备中…")
+                kw_err = validate_mode_params(mode, p)
+                if kw_err:
+                    st.error(kw_err)
+                else:
+                    progress = st.progress(0, text="准备中…")
                 log_box = st.empty()
                 logs = []
 
