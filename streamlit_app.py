@@ -7,11 +7,35 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 _MARKER = Path.home() / ".cache" / "pw_chromium_installed"
+
+
+def _ensure_cjk_fonts() -> None:
+    """Refresh fontconfig cache so Playwright/Chromium can find CJK fonts.
+
+    Streamlit Cloud Linux installs fonts via packages.txt but does NOT run fc-cache.
+    Without this step, Chromium renders Chinese characters as boxes (□).
+    """
+    print("[bootstrap] refreshing CJK font cache…")
+    try:
+        # Rebuild fontconfig cache to pick up newly installed fonts
+        subprocess.run(["fc-cache", "-f"], check=True, timeout=60)
+        # Verify at least one CJK font is available
+        r = subprocess.run(
+            ["fc-list", ":lang=zh"],
+            capture_output=True, text=True, timeout=15,
+        )
+        count = len(r.stdout.strip().splitlines())
+        print(f"[bootstrap] ✅ {count} CJK fonts found by fontconfig")
+    except FileNotFoundError:
+        print("[bootstrap] ⚠️ fc-cache not found — fonts may not render correctly")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bootstrap] font cache warning: {exc}")
 
 
 def _ensure_chromium() -> None:
@@ -32,6 +56,7 @@ def _ensure_chromium() -> None:
         print(f"[bootstrap] playwright install 失败（可忽略，运行时会被捕获）: {exc}")
 
 
+_ensure_cjk_fonts()
 _ensure_chromium()
 
 # 真正应用入口
