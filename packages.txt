@@ -21,3 +21,5 @@ libx11-6
 libxcb1
 libxext6
 libxshmfence1
+fonts-noto-cjk
+fontconfig
