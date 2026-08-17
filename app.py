@@ -247,7 +247,7 @@ def main():
                             region=parse_region(p.get("region")), out_path=out_path,
                             show_stats=show_stats,
                         )
-                    st.image(str(out_path), caption="截图结果", use_column_width=True)
+                    st.image(str(out_path), caption="截图结果", use_container_width=True)
                     # Save a timestamped copy to history
                     import shutil
                     ts = time.strftime("%Y%m%d_%H%M%S")
