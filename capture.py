@@ -361,6 +361,62 @@ class CaptureEngine:
                 return True
         return False
 
+    def _dismiss_login_wall(self, page: Page):
+        """Best-effort: close the anti-crawler / login modal overlay so the note
+        content behind it becomes visible — WITHOUT requiring login.
+
+        Covers the common cases:
+          * a dismissible login/verify modal (press ESC, click its close button)
+          * an injected overlay element (removed via JS)
+        Never raises; purely best-effort. If the wall is a hard login *redirect*
+        (the whole page is /login) there is nothing to dismiss and the screenshot
+        will simply show that page.
+        """
+        # 1) ESC often closes a modal
+        try:
+            page.keyboard.press("Escape")
+        except PWError:
+            pass
+        # 2) click any close button on the modal
+        close_selectors = [
+            ".login-container .close",
+            "#login-container .close",
+            "div.login .close",
+            ".reds-login .close",
+            ".sign-container .close",
+            "[class*='login'] [class*='close']",
+            "button[aria-label='关闭']",
+            ".close-button",
+            ".modal-close",
+        ]
+        for sel in close_selectors:
+            try:
+                el = page.query_selector(sel)
+                if el:
+                    el.click(timeout=1500)
+                    break
+            except PWError:
+                continue
+        # 3) remove the overlay element(s) via JS as a last resort
+        try:
+            page.evaluate(
+                """() => {
+                    const sels = [
+                        '.login-container', '#login-container', 'div.login',
+                        '.reds-login', '.sign-container', '.login-mask',
+                        '.modal-mask', '.verify-modal', '[class*="captcha"]',
+                        '[class*="login-mask"]', '[class*="slider-captcha"]'
+                    ];
+                    sels.forEach(s => {
+                        document.querySelectorAll(s).forEach(n => n.remove());
+                    });
+                    document.body.style.overflow = '';
+                }"""
+            )
+        except PWError:
+            pass
+        time.sleep(0.5)
+
     def _find_note_container(self, page: Page):
         """Find the main note content element (excludes sidebar, nav, recommendations).
         Returns the element, or raises CaptureError if not found."""
@@ -711,9 +767,9 @@ class CaptureEngine:
             page.goto(url, wait_until="domcontentloaded", timeout=12000)
             self._wait_for_note(page)
             if self._detect_login_wall(page):
-                raise LoginWallError(
-                    "登录墙/验证码 detected — 请先在左侧配置有效的 Cookie，或点「打开浏览器登录小红书」。"
-                )
+                # Anti-crawler wall detected: close the overlay and screenshot the
+                # content behind it WITHOUT requiring login (per user request).
+                self._dismiss_login_wall(page)
 
             # 3) simulate reading: mouse moves + scroll
             if self.humanize:
