@@ -47,6 +47,11 @@ LOGIN_WALL_SELECTORS = [
     "div.login",
     ".reds-login",
     ".sign-container",
+    # XHS anti-crawler / FE verify overlay (covers note content)
+    ".fe-verify-box",
+    "[class*='fe-verify']",
+    "[class*='verify-box']",
+    "[class*='captcha-container']",
 ]
 LOGIN_WALL_TEXT = ["登录后查看", "扫码登录", "短信登录", "请先登录", "登录小红书"]
 
@@ -385,6 +390,9 @@ class CaptureEngine:
             ".reds-login .close",
             ".sign-container .close",
             "[class*='login'] [class*='close']",
+            "[class*='fe-verify'] [class*='close']",
+            "[class*='fe-verify'] .close",
+            ".fe-verify-box [class*='close']",
             "button[aria-label='关闭']",
             ".close-button",
             ".modal-close",
@@ -405,7 +413,10 @@ class CaptureEngine:
                         '.login-container', '#login-container', 'div.login',
                         '.reds-login', '.sign-container', '.login-mask',
                         '.modal-mask', '.verify-modal', '[class*="captcha"]',
-                        '[class*="login-mask"]', '[class*="slider-captcha"]'
+                        '[class*="login-mask"]', '[class*="slider-captcha"]',
+                        // XHS anti-crawler FE verify box
+                        '.fe-verify-box', '[class*="fe-verify"]',
+                        '[class*="verify-box"]'
                     ];
                     sels.forEach(s => {
                         document.querySelectorAll(s).forEach(n => n.remove());
@@ -449,6 +460,22 @@ class CaptureEngine:
             # → that's the page wrapper, not the note body.
             return box["width"] >= vw * 0.9 and box["height"] >= max(sh, 800) * 0.85
 
+        def looks_like_overlay(el) -> bool:
+            """Reject elements that are clearly popups / verify boxes / modals,
+            not the actual note content."""
+            try:
+                cls = (el.get_attribute("class") or "").lower()
+                tag = el.evaluate("e => e.tagName.toLowerCase()")
+                id_ = (el.get_attribute("id") or "").lower()
+                overlay_keywords = [
+                    "verify", "captcha", "login", "sign", "mask", "modal",
+                    "overlay", "popup", "dialog", "fe-", "anti-",
+                ]
+                combined = f"{cls} {id_} {tag}"
+                return any(kw in combined for kw in overlay_keywords)
+            except PWError:
+                return False
+
         # 1) Try the precise selectors first (skip the explicit full-page block).
         for sel in NOTE_CONTAINER_SELECTORS:
             if sel in ("#detail-page",):
@@ -458,7 +485,7 @@ class CaptureEngine:
                 if not el:
                     continue
                 box = el.bounding_box()
-                if box and box["width"] > 200 and box["height"] > 100 and not looks_like_full_page(box):
+                if box and box["width"] > 200 and box["height"] > 100 and not looks_like_full_page(box) and not looks_like_overlay(el):
                     return el
             except PWError:
                 continue
@@ -492,7 +519,7 @@ class CaptureEngine:
             el = handle.as_element()
             if el:
                 box = el.bounding_box()
-                if box and not looks_like_full_page(box):
+                if box and not looks_like_full_page(box) and not looks_like_overlay(el):
                     return el
         except PWError:
             pass
