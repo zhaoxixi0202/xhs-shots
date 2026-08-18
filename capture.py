@@ -366,18 +366,18 @@ class CaptureEngine:
         content behind it becomes visible — WITHOUT requiring login.
 
         Covers the common cases:
-          * a dismissible login/verify modal (press ESC, click its close button)
+          * a dismissible login/verify modal (click its close button)
           * an injected overlay element (removed via JS)
         Never raises; purely best-effort. If the wall is a hard login *redirect*
         (the whole page is /login) there is nothing to dismiss and the screenshot
         will simply show that page.
+
+        IMPORTANT: we do NOT press ESC here. On XHS desktop web, notes are shown
+        as a modal overlay; pressing ESC closes the note modal and reveals the
+        explore feed page underneath — which defeats the purpose of capturing the
+        note. Close-button clicking + JS removal is sufficient.
         """
-        # 1) ESC often closes a modal
-        try:
-            page.keyboard.press("Escape")
-        except PWError:
-            pass
-        # 2) click any close button on the modal
+        # 1) click any close button on the modal
         close_selectors = [
             ".login-container .close",
             "#login-container .close",
@@ -397,7 +397,7 @@ class CaptureEngine:
                     break
             except PWError:
                 continue
-        # 3) remove the overlay element(s) via JS as a last resort
+        # 2) remove the overlay element(s) via JS as a last resort
         try:
             page.evaluate(
                 """() => {
