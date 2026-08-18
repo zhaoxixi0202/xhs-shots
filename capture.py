@@ -419,38 +419,84 @@ class CaptureEngine:
 
     def _find_note_container(self, page: Page):
         """Find the main note content element (excludes sidebar, nav, recommendations).
-        Returns the element, or raises CaptureError if not found."""
+
+        Important: the returned element must NOT be a full-page wrapper — otherwise the
+        screenshot becomes a "whole page" shot (sidebar + nav + recommendations) instead
+        of just the note. We therefore (a) skip selectors that are known page-level
+        containers, and (b) reject any candidate whose bounding box covers ~the full
+        viewport width AND ~the full page height.
+        """
+        try:
+            dims = page.evaluate(
+                """() => ({
+                    vw: window.innerWidth,
+                    vh: window.innerHeight,
+                    sh: Math.max(
+                        document.documentElement.scrollHeight,
+                        document.body.scrollHeight
+                    )
+                })"""
+            )
+        except PWError:
+            dims = {"vw": self.viewport["width"], "vh": 800, "sh": 800}
+        vw = dims.get("vw") or self.viewport["width"]
+        sh = dims.get("sh") or vw * 2
+
+        def looks_like_full_page(box) -> bool:
+            if not box:
+                return False
+            # Covers ~full viewport width AND (nearly) the whole scrollable height
+            # → that's the page wrapper, not the note body.
+            return box["width"] >= vw * 0.9 and box["height"] >= max(sh, 800) * 0.85
+
+        # 1) Try the precise selectors first (skip the explicit full-page block).
         for sel in NOTE_CONTAINER_SELECTORS:
+            if sel in ("#detail-page",):
+                continue  # that selector is the WHOLE page block — never use it here
             try:
                 el = page.query_selector(sel)
-                if el:
-                    # Make sure it has some visible size
-                    box = el.bounding_box()
-                    if box and box["width"] > 200 and box["height"] > 100:
-                        return el
+                if not el:
+                    continue
+                box = el.bounding_box()
+                if box and box["width"] > 200 and box["height"] > 100 and not looks_like_full_page(box):
+                    return el
             except PWError:
                 continue
-        # Last resort: try to find by excluding known sidebar/nav elements
+
+        # 2) Fallback: anchor on the note title, walk up its ancestors and pick the
+        #    deepest one that is reasonably sized but NOT a full-page wrapper.
         try:
-            handle = page.evaluate_handle("""() => {
-                // Look for the main content area that contains the note title
-                const title = document.querySelector('#detail-title, h1.title, .title');
-                if (title) {
-                    // Walk up to find a container that's reasonably sized
+            handle = page.evaluate_handle(
+                """() => {
+                    const title = document.querySelector(
+                        '#detail-title, h1.title, .title, .note-title, [class*="title"]'
+                    );
+                    if (!title) return null;
+                    const vw = window.innerWidth;
+                    const sh = Math.max(
+                        document.documentElement.scrollHeight,
+                        document.body.scrollHeight
+                    );
+                    const isFullPage = r => r.width >= vw * 0.9 &&
+                        r.height >= Math.max(sh, 800) * 0.85;
                     let el = title.parentElement;
-                    for (let i = 0; i < 6 && el; i++) {
+                    let best = null;
+                    for (let i = 0; i < 8 && el; i++) {
                         const r = el.getBoundingClientRect();
-                        if (r.width > 300 && r.height > 200) return el;
+                        if (r.width > 300 && r.height > 200 && !isFullPage(r)) best = el;
                         el = el.parentElement;
                     }
-                }
-                return null;
-            }""")
+                    return best;
+                }"""
+            )
             el = handle.as_element()
             if el:
-                return el
+                box = el.bounding_box()
+                if box and not looks_like_full_page(box):
+                    return el
         except PWError:
             pass
+
         raise CaptureError(
             "未找到笔记内容区域。页面可能：①未加载完 ②触发了登录墙 ③结构异常。\n"
             "建议：改用「element」模式手动指定 CSS 选择器，或改用「full」整页截图。"
