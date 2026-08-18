@@ -84,7 +84,7 @@ def get_history_items(limit: int = 50) -> list[dict]:
 st.set_page_config(page_title="小红书笔记截图工具", page_icon="📸", layout="wide")
 
 MODE_HELP = {
-    "to_keyword": "🎯 截到关键词位置（需填关键词）— 横向全屏宽度，纵向从顶部截到关键词出现的位置",
+    "to_keyword": "🎯 截到关键词位置 — 横向全屏宽度，纵向从顶部截到关键词出现的位置（关键词留空则直接截整篇笔记正文）",
     "note": "✨ 仅笔记正文 — 自动截取笔记内容区，不含侧边栏和推荐",
     "full": "整页长截图（包含侧边栏、导航、底部推荐等全部内容）",
     "viewport": "只截当前屏幕可见区域",
@@ -143,13 +143,14 @@ def parse_region(s):
 
 def validate_mode_params(mode: str, p: dict) -> str | None:
     """Return an error message if the chosen mode is missing required params, else None."""
-    if mode in ("keyword", "to_keyword"):
+    # NOTE: `to_keyword` does NOT require a keyword — if left empty it falls back
+    # to capturing the whole note content (see CaptureEngine.capture).
+    if mode == "keyword":
         kw = (p.get("keyword") or "").strip()
         if not kw:
-            alt = "note" if mode == "to_keyword" else "keyword"
-            return (f"「{mode}」模式需要先填写「关键词」才能截图。\n\n"
-                    f"请在上方输入关键词（例如「价格」「夸克扫描王」「总结」）。\n"
-                    f"👉 如果不知道关键词，可把「截取方式」改成「note」（截整篇笔记正文，无需关键词）。")
+            return ("「keyword」模式需要先填写「关键词」才能截图（它只截关键词那一块）。\n\n"
+                    "👉 如果你是想截整篇笔记，请把「截取方式」改成「to_keyword」或「note」，"
+                    "这两个模式不填关键词也能直接截整篇。")
     if mode == "element":
         sel = (p.get("selector") or "").strip()
         if not sel:

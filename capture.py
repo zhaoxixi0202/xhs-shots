@@ -798,18 +798,23 @@ class CaptureEngine:
                 el = self._find_keyword_element(page, keyword)
                 el.screenshot(path=str(out_path))
             elif mode == "to_keyword":
-                if not keyword:
-                    raise CaptureError("to_keyword mode requires `keyword`")
-                # Full-width screenshot from page TOP down to where the keyword appears
-                clip_h, vh = self._find_keyword_y(page, keyword)
-                # Scroll back to top for the screenshot
-                page.evaluate("() => window.scrollTo(0, 0)")
-                time.sleep(0.3)
-                page.screenshot(
-                    path=str(out_path),
-                    clip={"x": 0, "y": 0, "width": self.viewport["width"], "height": clip_h},
-                    full_page=False,
-                )
+                if keyword:
+                    # Full-width screenshot from page TOP down to where the keyword appears
+                    clip_h, vh = self._find_keyword_y(page, keyword)
+                    # Scroll back to top for the screenshot
+                    page.evaluate("() => window.scrollTo(0, 0)")
+                    time.sleep(0.3)
+                    page.screenshot(
+                        path=str(out_path),
+                        clip={"x": 0, "y": 0, "width": self.viewport["width"], "height": clip_h},
+                        full_page=False,
+                    )
+                else:
+                    # No keyword supplied → just capture the whole note content area.
+                    # (User intent: "don't need to find a keyword", so fall back to
+                    # the full note body, no sidebar / recommendations.)
+                    note_el = self._find_note_container(page)
+                    note_el.screenshot(path=str(out_path))
             elif mode == "region":
                 if not region or len(region) != 4:
                     raise CaptureError("region mode requires `region=(x,y,w,h)`")
