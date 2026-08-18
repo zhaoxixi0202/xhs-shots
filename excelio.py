@@ -276,13 +276,27 @@ def run_excel(
     total = len(rows)
     embedded_count = 0
     for i, (row, url) in enumerate(rows, start=1):
-        name = sanitize_filename(url)[:40]
+        # --- 链接合法性校验 ---
+        # 单元格里可能是纯文本/数字/标题等非链接内容（read_links 的兜底逻辑会把任何
+        # 非空值当链接返回）。这类直接跳过并提示原值，而不是让 page.goto 抛
+        # "Cannot navigate to invalid URL" 把整行标成 error。
+        if not _looks_like_link(url):
+            ws.cell(row=row, column=out_c).value = f"⏭️ 非链接已跳过 (原值: {str(url)[:50]})"
+            log(f"[{i}/{total}] row {row} -> skipped (非链接，原值: {str(url)[:50]})  {url}")
+            time.sleep(0.1)
+            continue
+        # 补全协议头：裸域名（如 xiaohongshu.com/explore/abc）没有 http(s):// 也会被
+        # goto 判为 invalid URL，这里自动补 "https://"
+        nav_url = str(url).strip()
+        if "://" not in nav_url:
+            nav_url = "https://" + nav_url
+        name = sanitize_filename(nav_url)[:40]
         img_path = out_dir / f"row{row}_{name}.png"
         status = "ok"
         msg = ""
         try:
             engine.capture(
-                url, mode, selector=selector, keyword=keyword, region=region,
+                nav_url, mode, selector=selector, keyword=keyword, region=region,
                 out_path=img_path, show_stats=show_stats,
             )
             # --- verify image file ---
