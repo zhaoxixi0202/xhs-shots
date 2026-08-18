@@ -47,13 +47,21 @@ LOGIN_WALL_SELECTORS = [
     "div.login",
     ".reds-login",
     ".sign-container",
-    # XHS anti-crawler / FE verify overlay (covers note content)
-    ".fe-verify-box",
-    "[class*='fe-verify']",
-    "[class*='verify-box']",
+    "[class*='login-mask']",
     "[class*='captcha-container']",
 ]
 LOGIN_WALL_TEXT = ["登录后查看", "扫码登录", "短信登录", "请先登录", "登录小红书"]
+
+# HARD BLOCK: IP-risk / network-risk error page (error 300012). The note content
+# is NEVER served by XHS in this case — there is nothing behind the overlay to
+# screenshot. We must detect this and report it clearly rather than trying to
+# dismiss it (which would leave an empty page).
+HARD_BLOCK_SELECTORS = [
+    ".fe-verify-box",
+    "[class*='fe-verify']",
+    "[class*='verify-box']",
+]
+HARD_BLOCK_TEXT = ["安全限制", "IP存在风险", "网络环境异常", "300012", "300013"]
 
 # Selectors for the NOTE CONTENT AREA (excludes sidebar, nav, recommendations).
 # Priority order: try each until one matches.
@@ -351,8 +359,13 @@ class CaptureEngine:
         time.sleep(random.uniform(0.3, 0.8))
 
     def _detect_login_wall(self, page: Page) -> bool:
+        """Detect a *dismissible* login / anti-crawler modal that sits ON TOP of a
+        note that has already loaded. Closing it reveals the note content."""
         url = page.url.lower()
-        if "login" in url or "signin" in url or "captcha" in url or "verify" in url:
+        if "login" in url or "signin" in url or "captcha" in url:
+            # 'verify' is intentionally excluded here: the fe-verify-box (error
+            # 300012) is a HARD block, not a dismissible modal — handled by
+            # _detect_hard_block() instead.
             return True
         for sel in LOGIN_WALL_SELECTORS:
             if page.query_selector(sel):
@@ -366,6 +379,30 @@ class CaptureEngine:
                 return True
         return False
 
+    def _detect_hard_block(self, page: Page) -> str | None:
+        """Detect a HARD network/IP block (fe-verify-box, error 300012). Returns the
+        error text if blocked, else None. The note content is never served in this
+        case, so there is nothing to dismiss or screenshot."""
+        url = page.url.lower()
+        if "300012" in url or "300013" in url or "website-login/error" in url:
+            return "IP/网络风险拦截（小红书拒绝加载内容）"
+        for sel in HARD_BLOCK_SELECTORS:
+            el = page.query_selector(sel)
+            if el:
+                try:
+                    txt = el.inner_text() or ""
+                except PWError:
+                    txt = ""
+                return txt.strip() or "IP/网络风险拦截"
+        try:
+            txt = page.inner_text("body") or ""
+        except PWError:
+            txt = ""
+        for kw in HARD_BLOCK_TEXT:
+            if kw in txt:
+                return f"检测到风控拦截：{kw}"
+        return None
+
     def _dismiss_login_wall(self, page: Page):
         """Best-effort: close the anti-crawler / login modal overlay so the note
         content behind it becomes visible — WITHOUT requiring login.
@@ -373,6 +410,8 @@ class CaptureEngine:
         Covers the common cases:
           * a dismissible login/verify modal (click its close button)
           * an injected overlay element (removed via JS)
+          * XHS "login to comment" / engagement bar at the bottom of notes
+
         Never raises; purely best-effort. If the wall is a hard login *redirect*
         (the whole page is /login) there is nothing to dismiss and the screenshot
         will simply show that page.
@@ -390,33 +429,45 @@ class CaptureEngine:
             ".reds-login .close",
             ".sign-container .close",
             "[class*='login'] [class*='close']",
-            "[class*='fe-verify'] [class*='close']",
-            "[class*='fe-verify'] .close",
-            ".fe-verify-box [class*='close']",
             "button[aria-label='关闭']",
             ".close-button",
             ".modal-close",
+            # XHS note-modal close (the × at top-left of note detail)
+            ".note-detail-container .close",
+            "[class*='note-detail'] [class*='close']",
+            "[class*='noteDetail'] [class*='close']",
+            "[class*='detail-close']",
         ]
         for sel in close_selectors:
             try:
                 el = page.query_selector(sel)
-                if el:
+                if el and el.is_visible():
                     el.click(timeout=1500)
+                    time.sleep(0.5)
                     break
             except PWError:
                 continue
-        # 2) remove the overlay element(s) via JS as a last resort
+
+        # 2) remove the overlay element(s) via JS as a last resort.
+        #    This covers: login modals, anti-crawler popups, captcha sliders,
+        #    AND the "登录后评论" / engagement bar that appears at the bottom
+        #    of XHS notes when the user is not logged in.
         try:
             page.evaluate(
                 """() => {
                     const sels = [
+                        // Login / sign-in modals
                         '.login-container', '#login-container', 'div.login',
                         '.reds-login', '.sign-container', '.login-mask',
                         '.modal-mask', '.verify-modal', '[class*="captcha"]',
                         '[class*="login-mask"]', '[class*="slider-captcha"]',
-                        // XHS anti-crawler FE verify box
-                        '.fe-verify-box', '[class*="fe-verify"]',
-                        '[class*="verify-box"]'
+                        // XHS-specific: comment-area login prompt ("登录后评论")
+                        '[class*="comment-login"]',
+                        '[class*="comment"][class*="login"]',
+                        '[class*="comment"][class*="signin"]',
+                        // Generic overlay patterns
+                        '[class*="auth-overlay"]',
+                        '[class*="sign-overlay"]',
                     ];
                     sels.forEach(s => {
                         document.querySelectorAll(s).forEach(n => n.remove());
@@ -424,9 +475,9 @@ class CaptureEngine:
                     document.body.style.overflow = '';
                 }"""
             )
+            time.sleep(0.5)
         except PWError:
             pass
-        time.sleep(0.5)
 
     def _find_note_container(self, page: Page):
         """Find the main note content element (excludes sidebar, nav, recommendations).
@@ -839,9 +890,21 @@ class CaptureEngine:
             # 2) navigate to the target note
             page.goto(url, wait_until="domcontentloaded", timeout=12000)
             self._wait_for_note(page)
+
+            # 2.5) HARD BLOCK check FIRST (fe-verify-box / error 300012). The note
+            # content is never loaded in this case — there is nothing to dismiss or
+            # screenshot. Report it clearly instead of producing a garbage image.
+            hard_block = self._detect_hard_block(page)
+            if hard_block:
+                raise CaptureError(
+                    f"截图失败：小红书风控拦截（{hard_block}）。\n"
+                    "这是 IP/网络级别的限制，无法通过关闭弹窗解决。\n"
+                    "建议：①等待 IP 冷却后重试 ②使用干净的代理 IP ③降低请求频率。"
+                )
+
+            # 2.6) Dismissible login/anti-crawler modal (note already loaded behind it).
+            # Close it so the screenshot shows the note, not the popup.
             if self._detect_login_wall(page):
-                # Anti-crawler wall detected: close the overlay and screenshot the
-                # content behind it WITHOUT requiring login (per user request).
                 self._dismiss_login_wall(page)
 
             # 3) simulate reading: mouse moves + scroll
