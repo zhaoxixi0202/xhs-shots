@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 
@@ -140,6 +141,55 @@ def _looks_like_link(s: str) -> bool:
     if re.search(r"[a-z0-9-]+\.[a-z]{2,}/", low):
         return True
     return False
+
+
+def _normalize_and_validate_url(raw: str) -> Optional[str]:
+    """Turn a cell value into a navigable URL, or return None if it can't be
+    made into a valid http(s) URL.
+
+    Handles the common Excel garbage that Playwright's page.goto rejects as
+    'invalid URL':
+      * missing scheme  -> prepend https://
+      * stray whitespace / newlines inside the URL -> strip them
+      * surrounding quotes / angle brackets
+      * trailing punctuation (.,;)
+      * bare 'https://' with nothing after it
+    """
+    s = str(raw).strip().strip('"').strip("'").strip("<>").strip()
+    if not s:
+        return None
+    if "://" not in s:
+        s = "https://" + s
+    s = s.rstrip(".,;")
+
+    def _ok(candidate: str) -> Optional[str]:
+        try:
+            p = urllib.parse.urlparse(candidate)
+        except (ValueError, UnicodeError):
+            return None
+        if p.scheme not in ("http", "https"):
+            return None
+        if not p.netloc:
+            return None
+        # netloc must be a real host: no whitespace and contain a dot
+        # (rejects 'https:// ', 'https://  xiaohongshu.com', 'https://12345')
+        if " " in p.netloc or "\n" in p.netloc or "\t" in p.netloc:
+            return None
+        if "." not in p.netloc:
+            return None
+        # Return the canonicalized form — urlparse silently drops invalid chars
+        # (e.g. a newline) from netloc, so the raw input may still contain junk
+        # that page.goto would reject. Rebuilding from the parsed parts is safe.
+        return urllib.parse.urlunparse(p)
+
+    res = _ok(s)
+    if res:
+        return res
+    # Recovery: remove ALL whitespace (catches 'https:// www.xiaohongshu.com')
+    s2 = re.sub(r"\s+", "", s)
+    if s2 != s:
+        return _ok(s2)
+    return None
 
 
 def find_link_columns(path: str | Path, sheet: Optional[str] = None,
@@ -285,11 +335,14 @@ def run_excel(
             log(f"[{i}/{total}] row {row} -> skipped (非链接，原值: {str(url)[:50]})  {url}")
             time.sleep(0.1)
             continue
-        # 补全协议头：裸域名（如 xiaohongshu.com/explore/abc）没有 http(s):// 也会被
-        # goto 判为 invalid URL，这里自动补 "https://"
-        nav_url = str(url).strip()
-        if "://" not in nav_url:
-            nav_url = "https://" + nav_url
+        # 严格校验 + 补全协议头：裸域名、带空格/换行的 URL、只有协议头没内容等
+        # 非法情况都在此拦截并跳过，绝不让 page.goto 抛 "invalid URL"。
+        nav_url = _normalize_and_validate_url(url)
+        if not nav_url:
+            ws.cell(row=row, column=out_c).value = f"⏭️ 链接格式无效已跳过 (原值: {str(url)[:50]})"
+            log(f"[{i}/{total}] row {row} -> skipped (链接格式无效，原值: {str(url)[:50]})  {url}")
+            time.sleep(0.1)
+            continue
         name = sanitize_filename(nav_url)[:40]
         img_path = out_dir / f"row{row}_{name}.png"
         status = "ok"
@@ -336,13 +389,25 @@ def run_excel(
             msg = str(e)
             ws.cell(row=row, column=out_c).value = "⛔ 需登录"
         except CaptureError as e:
-            status = "error"
             msg = str(e)
-            ws.cell(row=row, column=out_c).value = f"❌ {msg[:120]}"
+            # A URL that Playwright still rejected as invalid should be a clean
+            # skip, not a scary "browser error".
+            if "invalid URL" in msg or "Invalid URL" in msg:
+                status = "skipped"
+                ws.cell(row=row, column=out_c).value = f"⏭️ 链接无法访问已跳过 (原值: {str(url)[:50]})"
+                log(f"[{i}/{total}] row {row} -> skipped (链接无效)  {url}")
+            else:
+                status = "error"
+                ws.cell(row=row, column=out_c).value = f"❌ {msg[:120]}"
         except Exception as e:  # noqa: BLE001
-            status = "error"
             msg = repr(e)
-            ws.cell(row=row, column=out_c).value = f"❌ {msg[:120]}"
+            if "invalid URL" in msg or "Invalid URL" in msg:
+                status = "skipped"
+                ws.cell(row=row, column=out_c).value = f"⏭️ 链接无法访问已跳过 (原值: {str(url)[:50]})"
+                log(f"[{i}/{total}] row {row} -> skipped (链接无效)  {url}")
+            else:
+                status = "error"
+                ws.cell(row=row, column=out_c).value = f"❌ {msg[:120]}"
 
         detail = f"  ({msg[:80]})" if msg else ""
         log(f"[{i}/{total}] row {row} -> {status}{detail}  {url}")
