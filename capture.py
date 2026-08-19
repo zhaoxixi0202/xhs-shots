@@ -403,6 +403,26 @@ class CaptureEngine:
                 return f"检测到风控拦截：{kw}"
         return None
 
+    def _detect_rate_limit(self, page: Page) -> bool:
+        """Detect a SOFT rate-limit page (the note never loads, but the page does).
+
+        XHS shows 访问过于频繁 / 操作过于频繁 / 频率限制 / 429 / too many requests
+        instead of the note when it throttles a single IP. We raise this so the
+        batch loop can back off rather than fail every remaining note.
+        """
+        try:
+            txt = page.evaluate("() => document.body ? document.body.innerText : ''") or ""
+        except PWError:
+            return False
+        return bool(
+            re.search(
+                r"访问过于频繁|操作过于频繁|频率限制|请求过于频繁|限流|429|"
+                r"too many requests|rate.?limit|abuse detection",
+                txt,
+                re.I,
+            )
+        )
+
     def _dismiss_login_wall(self, page: Page):
         """Best-effort: close the anti-crawler / login modal overlay so the note
         content behind it becomes visible — WITHOUT requiring login.
@@ -1007,6 +1027,16 @@ class CaptureEngine:
             # Close it so the screenshot shows the note, not the popup.
             if self._detect_login_wall(page):
                 self._dismiss_login_wall(page)
+
+            # 2.7) Soft rate-limit detection. When XHS throttles (访问过于频繁 /
+            # 429 / 限流), the page still "loads" but the note never appears. Catching
+            # this early lets the batch loop back off instead of burning the rest of
+            # the run on guaranteed failures (and getting the IP banned harder).
+            if self._detect_rate_limit(page):
+                raise CaptureError(
+                    "截图失败：小红书限流（访问过于频繁 / 429）。\n"
+                    "建议：降低请求频率，拉长间隔，稍后重试。"
+                )
 
             # 3) simulate reading: mouse moves + scroll
             if self.humanize:

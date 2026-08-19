@@ -229,7 +229,8 @@ def main():
     # ---------------- single ----------------
     with tab1:
         url = st.text_input("笔记链接", placeholder="https://www.xiaohongshu.com/explore/...")
-        mode = st.selectbox("截取方式", list(MODE_HELP.keys()), index=0,
+        mode = st.selectbox("截取方式", list(MODE_HELP.keys()),
+                            index=list(MODE_HELP.keys()).index("note"),
                             format_func=lambda m: f"{m} — {MODE_HELP[m]}")
         p = mode_params(mode, tab_id="single")
         if st.button("📸 截图", use_container_width=True) and url.strip():
@@ -308,9 +309,24 @@ def main():
                                "可能：①链接在更靠下的行；②链接是图片/二维码而非文本网址；"
                                "③文件由程序生成且公式结果未被 Excel 计算过（请先用 Excel 打开、重算后另存）。")
 
-            mode = st.selectbox("截取方式", list(MODE_HELP.keys()), key="m2", index=0,
+            mode = st.selectbox("截取方式", list(MODE_HELP.keys()), key="m2",
+                                index=list(MODE_HELP.keys()).index("note"),
                                 format_func=lambda m: f"{m} — {MODE_HELP[m]}")
             p = mode_params(mode, tab_id="batch")
+
+            # ---- 高级：防封 / 限速（上百条建议保持默认） ----
+            with st.expander("⚙️ 性能 / 防封设置（上百条建议保持默认）", expanded=False):
+                st.caption("小红书对同一 IP 高频访问会限流/风控。以下参数用于自动降速与分批，"
+                           "避免一次性长跑被拦截。")
+                min_interval = st.slider("每条最小间隔(秒)", min_value=0.5, max_value=10.0,
+                                          value=2.0, step=0.5,
+                                          help="成功时相邻两条之间的间隔下界；被限流会自动拉长。")
+                batch_size = st.number_input("分批大小(条/批, 0=不分批)", min_value=0, max_value=200,
+                                             value=25, step=5,
+                                             help="每处理这么多条就保存一次进度并冷却，防止中途崩溃丢结果。")
+                batch_pause = st.slider("批次间冷却(秒)", min_value=0, max_value=120,
+                                        value=30, step=5,
+                                        help="每批之间暂停多久让 IP 降温。")
 
             if st.button("🚀 开始批量截图", use_container_width=True):
                 kw_err = validate_mode_params(mode, p)
@@ -336,6 +352,8 @@ def main():
                             region=parse_region(p.get("region")),
                             out_dir=OUTPUT_DIR, show_stats=show_stats,
                             on_progress=on_progress, log=logs.append,
+                            min_interval=min_interval, batch_size=int(batch_size),
+                            batch_pause=float(batch_pause),
                         )
                     progress.progress(1.0, text="完成 ✅")
                     # Also save a copy to history dir for persistence

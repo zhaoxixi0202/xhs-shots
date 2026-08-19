@@ -264,6 +264,23 @@ def column_sample(path: str | Path, link_col, header_rows: int = 1,
     return vals
 
 
+def _is_rate_limit(msg: str) -> bool:
+    """Classify an error message as an anti-crawler / rate-limit signal.
+
+    These are the failures that mean 'slow down', so the batch loop should back
+    off (lengthen the inter-note interval) instead of charging ahead.
+    """
+    m = (msg or "").lower()
+    return any(
+        k in m
+        for k in (
+            "风控", "fe-verify", "300012", "300013", "429",
+            "频率", "限流", "rate", "too many", "abuse",
+            "访问过于频繁", "操作过于频繁", "请求过于频繁",
+        )
+    )
+
+
 def run_excel(
     excel_path: str | Path,
     engine: CaptureEngine,
@@ -272,7 +289,7 @@ def run_excel(
     *,
     header_rows: int = 1,
     sheet: Optional[str] = None,
-    mode: str = "full",
+    mode: str = "note",
     selector: Optional[str] = None,
     keyword: Optional[str] = None,
     region: Optional[tuple] = None,
@@ -281,6 +298,12 @@ def run_excel(
     show_stats: bool = True,
     log=print,
     on_progress=None,
+    # ---- anti-ban / throughput knobs (tune for big batches) ----
+    min_interval: float = 2.0,
+    max_interval: float = 30.0,
+    batch_size: int = 25,
+    batch_pause: float = 30.0,
+    max_consecutive_blocks: int = 8,
 ) -> Path:
     """Run the whole batch. Returns the path of the saved .xlsx with images embedded."""
     excel_path = Path(excel_path)
@@ -322,6 +345,17 @@ def run_excel(
     # ensure header for output column
     hdr_row = max(header_rows, 1)
     ws.cell(row=hdr_row, column=out_c).value = ws.cell(row=hdr_row, column=out_c).value or "笔记截图"
+
+    out_xlsx = excel_path.parent / f"{excel_path.stem}_with_shots.xlsx"
+
+    # ---- anti-ban / throughput state ----
+    # current_delay grows on rate-limit failures (exponential backoff) and
+    # decays on successes. This keeps the batch from charging into a hard block
+    # when XHS starts throttling the Cloud IP.
+    current_delay = float(min_interval)
+    consecutive_blocks = 0
+    since_checkpoint = 0
+    aborted = False
 
     total = len(rows)
     embedded_count = 0
@@ -413,9 +447,41 @@ def run_excel(
         log(f"[{i}/{total}] row {row} -> {status}{detail}  {url}")
         if on_progress:
             on_progress(i, total, row, url, status, msg)
-        time.sleep(0.3)  # polite pause between requests
 
-    out_xlsx = excel_path.parent / f"{excel_path.stem}_with_shots.xlsx"
+        # ---- adaptive throttle: decide the next inter-note delay ----
+        if status == "ok":
+            consecutive_blocks = 0
+            current_delay = max(min_interval, current_delay * 0.7)  # decay back toward base
+        elif status == "login_wall":
+            consecutive_blocks = 0  # auth issue, not throttling — no backoff
+        elif _is_rate_limit(msg):
+            consecutive_blocks += 1
+            current_delay = min(max_interval, current_delay * 2.0)  # exponential backoff
+            log(f"  ⚠️ 疑似限流/风控，自动拉长间隔到 {current_delay:.1f}s（连续第 {consecutive_blocks} 次）")
+            if consecutive_blocks >= max_consecutive_blocks:
+                log(f"  🛑 连续 {consecutive_blocks} 次被拦截，疑似 Cloud IP 已被限流。"
+                    f"停止批量以保护账号/IP，请降低频率、稍后重试。已处理 {i}/{total} 条。")
+                aborted = True
+                break
+        else:
+            # 其他错误（无效链接跳过、零字节等）：不是限流，不计入连续拦截
+            consecutive_blocks = 0
+
+        # ---- checkpoint + batch cooldown (resilience for big runs) ----
+        since_checkpoint += 1
+        if batch_size and since_checkpoint >= batch_size:
+            try:
+                wb.save(out_xlsx)
+            except Exception:  # noqa: BLE001
+                pass
+            since_checkpoint = 0
+            if i < total and not aborted:
+                log(f"  💾 已 checkpoint（{i}/{total}），冷却 {batch_pause:.0f}s 让 IP 降温…")
+                time.sleep(batch_pause)
+
+        time.sleep(current_delay)  # polite + adaptive pause between requests
+
     wb.save(out_xlsx)
-    log(f"\n批量完成：共 {total} 条，成功嵌入图片 {embedded_count} 张 → {out_xlsx}")
+    tail = "（已中途停止：疑似被限流）" if aborted else ""
+    log(f"\n批量完成{tail}：共 {total} 条，成功嵌入图片 {embedded_count} 张 → {out_xlsx}")
     return out_xlsx
