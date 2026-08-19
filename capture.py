@@ -623,6 +623,69 @@ class CaptureEngine:
         time.sleep(0.3)
         return el
 
+    def _note_author_first_image_clip(self, page: Page, note_el):
+        """Compute a crop band (relative to the full note-element screenshot) that
+        spans from the author block (top) down to the first content image (bottom).
+
+        This satisfies the user's request:
+          * "保证作者显示完全"  — the author block is never clipped (we start at its top)
+          * "截滚动到第一张图片的" — the capture includes the first note image
+
+        Returns (y0, y1) in pixels relative to the note element's top-left, or None
+        if we can't locate a first image (caller falls back to the full element).
+        """
+        data = page.evaluate(
+            """() => {
+                const nc = document.querySelector('#noteContainer') ||
+                           document.querySelector('.note-container') ||
+                           document.querySelector('.note-detail');
+                if (!nc) return null;
+                const sTop = window.scrollY;
+                const ncRect = nc.getBoundingClientRect();
+                const ncTop = ncRect.top + sTop;
+                const ncW = ncRect.width;
+
+                // --- author block: topmost matching element within the card ---
+                let authorTop = null;
+                const aSels = ['.author-wrapper', '.note-info', '.user-info', '#user-info',
+                               '.author-info', '.note-header', '.author', '.info .header'];
+                aSels.forEach(s => {
+                    const el = nc.querySelector(s);
+                    if (el) {
+                        const dt = el.getBoundingClientRect().top + sTop;
+                        if (authorTop === null || dt < authorTop) authorTop = dt;
+                    }
+                });
+                // refine: among all .author-wrapper occurrences, keep the topmost
+                nc.querySelectorAll('.author-wrapper').forEach(el => {
+                    const dt = el.getBoundingClientRect().top + sTop;
+                    if (authorTop === null || dt < authorTop) authorTop = dt;
+                });
+
+                // --- first content image: first <img> that is a real photo ---
+                let firstImg = null;
+                nc.querySelectorAll('img').forEach(im => {
+                    const r = im.getBoundingClientRect();
+                    if (r.width < 50 || r.height < 50) return;
+                    const src = (im.getAttribute('src') || '').toLowerCase();
+                    if (src.includes('avatar')) return;
+                    if (src.includes('no-comments')) return;
+                    const dt = r.top + sTop;
+                    const db = r.bottom + sTop;
+                    if (firstImg === null || dt < firstImg.top) firstImg = {top: dt, bottom: db};
+                });
+                if (!firstImg) return null;
+
+                const y0 = Math.max(0, Math.min(authorTop !== null ? authorTop : ncTop, firstImg.top) - ncTop);
+                const y1 = firstImg.bottom - ncTop;
+                if (y1 <= y0) return null;
+                return {y0: Math.round(y0), y1: Math.round(y1), w: Math.round(ncW)};
+            }"""
+        )
+        if not data:
+            return None
+        return (data["y0"], data["y1"])
+
     def _find_keyword_y(self, page: Page, keyword: str, padding: int = 80) -> tuple[int, int]:
         """Scroll through the page to find the keyword, return (clip_height, viewport_height).
 
@@ -916,9 +979,28 @@ class CaptureEngine:
             if mode == "full":
                 page.screenshot(path=str(out_path), full_page=True)
             elif mode == "note":
-                # Only screenshot the note content area (no sidebar, no recommendations)
+                # Only screenshot the note content area (no sidebar, no recommendations).
+                # Crop to author block (top) → first content image (bottom) so the
+                # author is always fully shown and the first image is included.
                 note_el = self._find_note_container(page)
-                note_el.screenshot(path=str(out_path))
+                clip = self._note_author_first_image_clip(page, note_el)
+                if clip:
+                    import tempfile as _tf
+                    import os as _os
+                    from PIL import Image as _Image
+
+                    tmp = str(out_path) + ".full.png"
+                    note_el.screenshot(path=tmp)
+                    with _Image.open(tmp) as _im:
+                        y0, y1 = clip
+                        y1 = min(y1, _im.height)
+                        _im.crop((0, y0, _im.width, y1)).save(str(out_path))
+                    try:
+                        _os.remove(tmp)
+                    except OSError:
+                        pass
+                else:
+                    note_el.screenshot(path=str(out_path))
             elif mode == "viewport":
                 page.screenshot(path=str(out_path))
             elif mode == "element":
