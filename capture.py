@@ -629,26 +629,34 @@ class CaptureEngine:
 
         This satisfies the user's request:
           * "保证作者显示完全"  — the author block is never clipped (we start at its top)
-          * "截滚动到第一张图片的" — the capture includes the first note image
+          * "截滚动到第一张图片的" — the capture includes the note's FIRST photo
+
+        The "first content image" must be a REAL note photo, NOT:
+          * the author avatar / comment avatars
+          * inline emoji / sticker / icon images in the text
+          * thumbnails inside the comments or the recommendation sidebar
+        We enforce this with (a) a minimum width relative to the card, (b) an
+        exclusion list of zones (comment / recommend / avatar / sticker / emoji …),
+        and (c) a src-keyword blacklist. Among the survivors we pick the topmost one.
 
         Returns (y0, y1) in pixels relative to the note element's top-left, or None
         if we can't locate a first image (caller falls back to the full element).
         """
+        # Pass the real captured element (not a fresh #noteContainer query) so the
+        # crop coordinates line up exactly with note_el.screenshot().
         data = page.evaluate(
-            """() => {
-                const nc = document.querySelector('#noteContainer') ||
-                           document.querySelector('.note-container') ||
-                           document.querySelector('.note-detail');
+            """(nc) => {
                 if (!nc) return null;
                 const sTop = window.scrollY;
                 const ncRect = nc.getBoundingClientRect();
                 const ncTop = ncRect.top + sTop;
                 const ncW = ncRect.width;
 
-                // --- author block: topmost matching element within the card ---
+                // ---- author block: topmost non-comment author element ----
                 let authorTop = null;
                 const aSels = ['.author-wrapper', '.note-info', '.user-info', '#user-info',
-                               '.author-info', '.note-header', '.author', '.info .header'];
+                               '.author-info', '.note-header', '.author', '.info .header',
+                               '.author-info', '.note-author'];
                 aSels.forEach(s => {
                     const el = nc.querySelector(s);
                     if (el) {
@@ -656,31 +664,61 @@ class CaptureEngine:
                         if (authorTop === null || dt < authorTop) authorTop = dt;
                     }
                 });
-                // refine: among all .author-wrapper occurrences, keep the topmost
-                nc.querySelectorAll('.author-wrapper').forEach(el => {
-                    const dt = el.getBoundingClientRect().top + sTop;
-                    if (authorTop === null || dt < authorTop) authorTop = dt;
-                });
 
-                // --- first content image: first <img> that is a real photo ---
-                let firstImg = null;
-                nc.querySelectorAll('img').forEach(im => {
+                // ---- first CONTENT image (a real note photo) ----
+                // Zones whose <img> children must never count as the note photo.
+                const EXCLUDE_ZONE = ['comment', 'recommend', 'related', 'similar',
+                                      'avatar', 'footer', 'sidebar', 'aside',
+                                      'stick', 'emoji', 'mascot', 'expression'];
+                const inExcludedZone = (im) => {
+                    let el = im;
+                    while (el) {
+                        const c = (el.className && el.className.toString().toLowerCase()) || '';
+                        const id = (el.id || '').toLowerCase();
+                        if (EXCLUDE_ZONE.some(k => c.includes(k) || id.includes(k))) return true;
+                        el = el.parentElement;
+                    }
+                    return false;
+                };
+                const SRC_BLACKLIST = /avatar|no-comments|emoji|sticker|icon|logo|badge|placeholder|face|expression/;
+                const minW = Math.max(160, ncW * 0.22);
+
+                const consider = (im) => {
+                    if (inExcludedZone(im)) return;
                     const r = im.getBoundingClientRect();
-                    if (r.width < 50 || r.height < 50) return;
+                    if (r.width < minW || r.height < 80) return;
                     const src = (im.getAttribute('src') || '').toLowerCase();
-                    if (src.includes('avatar')) return;
-                    if (src.includes('no-comments')) return;
+                    if (SRC_BLACKLIST.test(src)) return;
                     const dt = r.top + sTop;
                     const db = r.bottom + sTop;
-                    if (firstImg === null || dt < firstImg.top) firstImg = {top: dt, bottom: db};
-                });
+                    if (!window.__firstImg || dt < window.__firstImg.top) {
+                        window.__firstImg = {top: dt, bottom: db};
+                    }
+                };
+                window.__firstImg = null;
+
+                // 1) Prefer a media carousel / image wrapper if the layout has one.
+                const mediaEls = nc.querySelectorAll(
+                    '.swiper-wrapper, .note-slider, .carousel, .media-wrapper, ' +
+                    '.left, .note-image-wrapper, .note-pic, [class*="slider"]'
+                );
+                mediaEls.forEach(m => m.querySelectorAll('img').forEach(consider));
+
+                // 2) Fallback: scan every <img> in the card.
+                if (!window.__firstImg) {
+                    nc.querySelectorAll('img').forEach(consider);
+                }
+
+                const firstImg = window.__firstImg;
                 if (!firstImg) return null;
 
-                const y0 = Math.max(0, Math.min(authorTop !== null ? authorTop : ncTop, firstImg.top) - ncTop);
-                const y1 = firstImg.bottom - ncTop;
+                const topRef = (authorTop !== null) ? Math.min(authorTop, firstImg.top) : firstImg.top;
+                const y0 = Math.max(0, topRef - ncTop);
+                const y1 = firstImg.bottom - ncTop + 16; // small padding so the photo isn't clipped
                 if (y1 <= y0) return null;
                 return {y0: Math.round(y0), y1: Math.round(y1), w: Math.round(ncW)};
-            }"""
+            }""",
+            note_el,
         )
         if not data:
             return None
