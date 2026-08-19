@@ -734,7 +734,10 @@ class CaptureEngine:
 
                 const topRef = (authorTop !== null) ? Math.min(authorTop, firstImg.top) : firstImg.top;
                 const y0 = Math.max(0, topRef - ncTop);
-                const y1 = firstImg.bottom - ncTop + 16; // small padding so the photo isn't clipped
+                // End EXACTLY at the first photo's bottom (+2px anti-clip safety). A larger
+                // padding would spill into the next stacked image / caption, violating
+                // "截到第一张图片的".
+                const y1 = firstImg.bottom - ncTop + 2;
                 if (y1 <= y0) return null;
                 return {y0: Math.round(y0), y1: Math.round(y1), w: Math.round(ncW)};
             }""",
