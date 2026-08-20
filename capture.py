@@ -499,6 +499,51 @@ class CaptureEngine:
         except PWError:
             pass
 
+    def _hide_sticky_headers(self, page: Page):
+        """Hide sticky / fixed header bars that sit above the note content.
+
+        On XHS desktop, a global navigation bar (or debug overlay) can appear at the
+        very top of #noteContainer.  It covers the author name when the screenshot is
+        cropped to [author_top, first_image_bottom].  We hide it via JS so the
+        element.screenshot() captures only the clean note card.
+        """
+        try:
+            page.evaluate(
+                """() => {
+                    // Common XHS / generic sticky-header selectors.
+                    const sels = [
+                        // XHS desktop global nav / top bar
+                        '.global-nav', '#global-nav',
+                        '[class*="top-bar"]', '[class*="topbar"]',
+                        '[class*="sticky-header"]', '[class*="sticky-nav"]',
+                        '.header-bar', '#header-bar',
+                        // Generic fixed/sticky positioned headers that are NOT inside
+                        // the note container's main body (they sit above it).
+                        'header[style*="fixed"]', 'header[style*="sticky"]',
+                        'nav[style*="fixed"]',   'nav[style*="sticky"]',
+                        // Any element with position:fixed that is near the top of
+                        // the viewport AND is not part of the note content.
+                        // (We target by class/id keywords rather than blanket removal.)
+                        '[class*="navbar"]', '[class*="toolbar"]',
+                        '[id*="navbar"]', '[id*="toolbar"]',
+                        // XHS-specific: the thin black bar that sometimes shows
+                        // above the note detail area.
+                        '.note-detail-bar', '.detail-top-bar',
+                        '[class*="detail-head"]',
+                    ];
+                    let hidden = 0;
+                    sels.forEach(s => {
+                        document.querySelectorAll(s).forEach(el => {
+                            el.style.setProperty('display', 'none', 'important');
+                            hidden++;
+                        });
+                    });
+                    return hidden;
+                }"""
+            )
+        except PWError:
+            pass
+
     def _find_note_container(self, page: Page):
         """Find the main note content element (excludes sidebar, nav, recommendations).
 
@@ -1054,6 +1099,10 @@ class CaptureEngine:
                 # Crop to author block (top) → first content image (bottom) so the
                 # author is always fully shown and the first image is included.
                 note_el = self._find_note_container(page)
+                # Hide sticky / fixed header bars that sit above the note content
+                # (e.g. XHS global nav bar).  Without this, a dark strip at the top
+                # of #noteContainer covers part of the author name.
+                self._hide_sticky_headers(page)
                 clip = self._note_author_first_image_clip(page, note_el)
                 if clip:
                     import tempfile as _tf
