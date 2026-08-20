@@ -510,24 +510,19 @@ class CaptureEngine:
         try:
             page.evaluate(
                 """() => {
-                    // Common XHS / generic sticky-header selectors.
+                    // --- Phase 1: known sticky-header selectors ---
                     const sels = [
                         // XHS desktop global nav / top bar
                         '.global-nav', '#global-nav',
                         '[class*="top-bar"]', '[class*="topbar"]',
                         '[class*="sticky-header"]', '[class*="sticky-nav"]',
                         '.header-bar', '#header-bar',
-                        // Generic fixed/sticky positioned headers that are NOT inside
-                        // the note container's main body (they sit above it).
+                        // Generic fixed/sticky positioned headers
                         'header[style*="fixed"]', 'header[style*="sticky"]',
                         'nav[style*="fixed"]',   'nav[style*="sticky"]',
-                        // Any element with position:fixed that is near the top of
-                        // the viewport AND is not part of the note content.
-                        // (We target by class/id keywords rather than blanket removal.)
                         '[class*="navbar"]', '[class*="toolbar"]',
-                        '[id*="navbar"]', '[id*="toolbar"]',
-                        // XHS-specific: the thin black bar that sometimes shows
-                        // above the note detail area.
+                        '[id*="navbar"]',   '[id*="toolbar"]',
+                        // XHS-specific thin bars above note detail
                         '.note-detail-bar', '.detail-top-bar',
                         '[class*="detail-head"]',
                     ];
@@ -538,11 +533,101 @@ class CaptureEngine:
                             hidden++;
                         });
                     });
+
+                    // --- Phase 2: brute-force any position:fixed/absolute element
+                    // whose bounding box overlaps the TOP of #noteContainer.
+                    const nc = document.querySelector('#noteContainer')
+                           || document.querySelector('.note-container')
+                           || document.querySelector('.content-wrapper');
+                    if (nc) {
+                        const ncRect = nc.getBoundingClientRect();
+                        const ncTop = ncRect.top;
+                        document.querySelectorAll('*').forEach(el => {
+                            try {
+                                const cs = getComputedStyle(el);
+                                const pos = cs.position;
+                                if (pos !== 'fixed' && pos !== 'absolute') return;
+                                const r = el.getBoundingClientRect();
+                                // Element is near or above the note container's top edge
+                                // AND it's not deeply nested inside the note body itself.
+                                if (r.bottom <= ncTop + 8 && r.width > 50) {
+                                    el.style.setProperty('display', 'none', 'important');
+                                    hidden++;
+                                }
+                            } catch(e) { /* skip */ }
+                        });
+                    }
+
                     return hidden;
                 }"""
             )
         except PWError:
             pass
+
+    @staticmethod
+    def _trim_dark_borders(img_path, threshold=40):
+        """Trim solid dark borders from a screenshot image.
+
+        XHS pages sometimes render a thin dark frame around #noteContainer
+        (page background bleeding through padding/margin).  This post-process
+        step crops away uniform dark borders so only the clean content remains.
+
+        Args:
+            img_path: path to the PNG file (modified in-place).
+            threshold: max brightness (0-255) for a pixel to be considered "dark".
+        """
+        from PIL import Image as _PILImage
+        import os as _os
+
+        try:
+            with _PILImage.open(img_path) as im:
+                if im.mode != "RGB":
+                    im = im.convert("RGB")
+                w, h = im.size
+                if w < 10 or h < 10:
+                    return
+
+                def _is_dark_row(y):
+                    """Check if row y is predominantly dark."""
+                    total = 0
+                    count = 0
+                    for x in range(0, w, max(1, w // 100)):
+                        r, g, b = im.getpixel((x, y))[:3]
+                        total += (r + g + b) / 3
+                        count += 1
+                    return (total / count) < threshold if count > 0 else False
+
+                def _is_dark_col(x):
+                    """Check if column x is predominantly dark."""
+                    total = 0
+                    count = 0
+                    for y in range(0, h, max(1, h // 100)):
+                        r, g, b = im.getpixel((x, y))[:3]
+                        total += (r + g + b) / 3
+                        count += 1
+                    return (total / count) < threshold if count > 0 else False
+
+                top = 0
+                while top < h and _is_dark_row(top):
+                    top += 1
+                bottom = h - 1
+                while bottom > top and _is_dark_row(bottom):
+                    bottom -= 1
+                left = 0
+                while left < w and _is_dark_col(left):
+                    left += 1
+                right = w - 1
+                while right > left and _is_dark_col(right):
+                    right -= 1
+
+                # Only crop if we actually found borders to trim
+                if top > 0 or bottom < h - 1 or left > 0 or right < w - 1:
+                    cropped = im.crop((left, top, right + 1, bottom + 1))
+                    tmp = img_path + ".tmp_trim.png"
+                    cropped.save(tmp)
+                    _os.replace(tmp, img_path)
+        except Exception:
+            pass  # non-critical: better to keep original than crash
 
     def _find_note_container(self, page: Page):
         """Find the main note content element (excludes sidebar, nav, recommendations).
@@ -1121,6 +1206,9 @@ class CaptureEngine:
                         pass
                 else:
                     note_el.screenshot(path=str(out_path))
+                # Post-process: trim any remaining dark borders (page background
+                # bleeding through #noteContainer padding/margin).
+                self._trim_dark_borders(str(out_path))
             elif mode == "viewport":
                 page.screenshot(path=str(out_path))
             elif mode == "element":
@@ -1153,6 +1241,7 @@ class CaptureEngine:
                     # the full note body, no sidebar / recommendations.)
                     note_el = self._find_note_container(page)
                     note_el.screenshot(path=str(out_path))
+                    self._trim_dark_borders(str(out_path))
             elif mode == "region":
                 if not region or len(region) != 4:
                     raise CaptureError("region mode requires `region=(x,y,w,h)`")
