@@ -24,6 +24,21 @@ from openpyxl.utils import get_column_letter
 from capture import CaptureEngine, LoginWallError, CaptureError, _col_to_idx, sanitize_filename
 
 
+def _resolve_anchor(ws, row: int, col: int):
+    """Return (row, col) of the top-left cell of the merge containing (row, col),
+    or (row, col) itself if it is not merged. Needed because writing a value or
+    anchoring an image to a MergedCell raises (read-only)."""
+    for rng in ws.merged_cells.ranges:
+        if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+            return rng.min_row, rng.min_col
+    return row, col
+
+
+def _out_set(ws, row: int, col: int, value):
+    r, c = _resolve_anchor(ws, row, col)
+    ws.cell(row=r, column=c).value = value
+
+
 def load_workbook(path: str | Path, read_only: bool = False, data_only: bool = True):
     return openpyxl.load_workbook(path, read_only=read_only, data_only=data_only)
 
@@ -342,9 +357,12 @@ def run_excel(
     wb = openpyxl.load_workbook(excel_path)
     ws = _get_sheet(wb, sheet)
     out_c = _col_to_idx(out_col)
-    # ensure header for output column
+    # ensure header for output column (skip if it falls inside a merged cell,
+    # e.g. the sheet's title row — writing a MergedCell raises)
     hdr_row = max(header_rows, 1)
-    ws.cell(row=hdr_row, column=out_c).value = ws.cell(row=hdr_row, column=out_c).value or "笔记截图"
+    _hr, _hc = _resolve_anchor(ws, hdr_row, out_c)
+    if ws.cell(row=_hr, column=_hc).value in (None, ""):
+        ws.cell(row=_hr, column=_hc).value = "笔记截图"
 
     out_xlsx = excel_path.parent / f"{excel_path.stem}_with_shots.xlsx"
 
@@ -365,7 +383,7 @@ def run_excel(
         # 非空值当链接返回）。这类直接跳过并提示原值，而不是让 page.goto 抛
         # "Cannot navigate to invalid URL" 把整行标成 error。
         if not _looks_like_link(url):
-            ws.cell(row=row, column=out_c).value = f"⏭️ 非链接已跳过 (原值: {str(url)[:50]})"
+            _out_set(ws, row, out_c, f"⏭️ 非链接已跳过 (原值: {str(url)[:50]})")
             log(f"[{i}/{total}] row {row} -> skipped (非链接，原值: {str(url)[:50]})  {url}")
             time.sleep(0.1)
             continue
@@ -373,7 +391,7 @@ def run_excel(
         # 非法情况都在此拦截并跳过，绝不让 page.goto 抛 "invalid URL"。
         nav_url = _normalize_and_validate_url(url)
         if not nav_url:
-            ws.cell(row=row, column=out_c).value = f"⏭️ 链接格式无效已跳过 (原值: {str(url)[:50]})"
+            _out_set(ws, row, out_c, f"⏭️ 链接格式无效已跳过 (原值: {str(url)[:50]})")
             log(f"[{i}/{total}] row {row} -> skipped (链接格式无效，原值: {str(url)[:50]})  {url}")
             time.sleep(0.1)
             continue
@@ -400,7 +418,7 @@ def run_excel(
             img.width = int(img.width * scale)
             img.height = int(img.height * scale)
 
-            anchor_cell = f"{get_column_letter(out_c)}{row}"
+            anchor_cell = (lambda r, c: f"{get_column_letter(c)}{r}")(*_resolve_anchor(ws, row, out_c))
             ws.add_image(img, anchor_cell)
 
             # Set row height so the image is visible (at least the scaled height, in points)
@@ -416,32 +434,32 @@ def run_excel(
             if current_w < 20:
                 ws.column_dimensions[out_col_letter].width = 25
 
-            ws.cell(row=row, column=out_c).value = f"✅ 已插入 ({img.width}×{img.height}px)"
+            _out_set(ws, row, out_c, f"✅ 已插入 ({img.width}×{img.height}px)")
             embedded_count += 1
         except LoginWallError as e:
             status = "login_wall"
             msg = str(e)
-            ws.cell(row=row, column=out_c).value = "⛔ 需登录"
+            _out_set(ws, row, out_c, "⛔ 需登录")
         except CaptureError as e:
             msg = str(e)
             # A URL that Playwright still rejected as invalid should be a clean
             # skip, not a scary "browser error".
             if "invalid URL" in msg or "Invalid URL" in msg:
                 status = "skipped"
-                ws.cell(row=row, column=out_c).value = f"⏭️ 链接无法访问已跳过 (原值: {str(url)[:50]})"
+                _out_set(ws, row, out_c, f"⏭️ 链接无法访问已跳过 (原值: {str(url)[:50]})")
                 log(f"[{i}/{total}] row {row} -> skipped (链接无效)  {url}")
             else:
                 status = "error"
-                ws.cell(row=row, column=out_c).value = f"❌ {msg[:120]}"
+                _out_set(ws, row, out_c, f"❌ {msg[:120]}")
         except Exception as e:  # noqa: BLE001
             msg = repr(e)
             if "invalid URL" in msg or "Invalid URL" in msg:
                 status = "skipped"
-                ws.cell(row=row, column=out_c).value = f"⏭️ 链接无法访问已跳过 (原值: {str(url)[:50]})"
+                _out_set(ws, row, out_c, f"⏭️ 链接无法访问已跳过 (原值: {str(url)[:50]})")
                 log(f"[{i}/{total}] row {row} -> skipped (链接无效)  {url}")
             else:
                 status = "error"
-                ws.cell(row=row, column=out_c).value = f"❌ {msg[:120]}"
+                _out_set(ws, row, out_c, f"❌ {msg[:120]}")
 
         detail = f"  ({msg[:80]})" if msg else ""
         log(f"[{i}/{total}] row {row} -> {status}{detail}  {url}")
