@@ -231,6 +231,7 @@ def main():
         url = st.text_input("笔记链接", placeholder="https://www.xiaohongshu.com/explore/...")
         mode = st.selectbox("截取方式", list(MODE_HELP.keys()),
                             index=list(MODE_HELP.keys()).index("note"),
+                            key="single_mode",
                             format_func=lambda m: f"{m} — {MODE_HELP[m]}")
         p = mode_params(mode, tab_id="single")
         if st.button("📸 截图", use_container_width=True) and url.strip():
@@ -279,7 +280,8 @@ def main():
             cols = preview_columns(tmp, sheet=sheet)
             col_opts = {f"{c['letter']}  （示例：{c['sample'] or '—'}）": c["letter"] for c in cols}
             st.markdown("**选择链接所在列：**")
-            link_col = st.selectbox("链接列", list(col_opts.keys()), label_visibility="collapsed")
+            link_col = st.selectbox("链接列", list(col_opts.keys()),
+                                    label_visibility="collapsed", key="batch_link_col")
             link_letter = col_opts[link_col]
 
             st.markdown("**截图写入列：**")
