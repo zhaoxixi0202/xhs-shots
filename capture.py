@@ -525,6 +525,8 @@ class CaptureEngine:
                         // XHS-specific thin bars above note detail
                         '.note-detail-bar', '.detail-top-bar',
                         '[class*="detail-head"]',
+                        // XHS debug/overlay bar with numeric ID (e.g. "13030189")
+                        '[id*="13030189"]',
                     ];
                     let hidden = 0;
                     sels.forEach(s => {
@@ -587,15 +589,26 @@ class CaptureEngine:
                 if w < 10 or h < 10:
                     return
 
-                def _is_dark_row(y):
+                def _is_dark_row(y, use_ratio=False):
                     """Check if row y is predominantly dark."""
                     total = 0
                     count = 0
-                    for x in range(0, w, max(1, w // 100)):
+                    dark_count = 0
+                    step = max(1, w // 100)
+                    for x in range(0, w, step):
                         r, g, b = im.getpixel((x, y))[:3]
-                        total += (r + g + b) / 3
+                        avg = (r + g + b) / 3
+                        total += avg
                         count += 1
+                        if avg < threshold:
+                            dark_count += 1
+                    if use_ratio and count > 0:
+                        # For top border: treat as dark if >60% pixels are dark
+                        # (handles bars with white text like "13030189")
+                        return (dark_count / count) > 0.6
                     return (total / count) < threshold if count > 0 else False
+
+                top = 0
 
                 def _is_dark_col(x):
                     """Check if column x is predominantly dark."""
@@ -606,9 +619,7 @@ class CaptureEngine:
                         total += (r + g + b) / 3
                         count += 1
                     return (total / count) < threshold if count > 0 else False
-
-                top = 0
-                while top < h and _is_dark_row(top):
+                while top < h and _is_dark_row(top, use_ratio=True):
                     top += 1
                 bottom = h - 1
                 while bottom > top and _is_dark_row(bottom):
@@ -626,7 +637,7 @@ class CaptureEngine:
                     tmp = img_path + ".tmp_trim.png"
                     cropped.save(tmp)
                     _os.replace(tmp, img_path)
-        except Exception:
+        except Exception as e:
             pass  # non-critical: better to keep original than crash
 
     def _find_note_container(self, page: Page):
